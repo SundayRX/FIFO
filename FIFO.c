@@ -31,7 +31,7 @@ void* FIFOMemcpy(void* dst, const void* src, unsigned int len)
 
 unsigned char FIFOInit(FIFO_S* FIFO, void* Addr, unsigned int Capacity, unsigned short TypeSize)
 {
-	if (Capacity % TypeSize != 0) return 0;
+	if (Capacity == 0 || (Capacity % TypeSize != 0)) return 0;
 	FIFO->Pointer = Addr;
 	FIFO->Capacity = Capacity;
 	FIFO->TypeSize = TypeSize;
@@ -73,15 +73,15 @@ unsigned int FIFOGetWriteByteSize(FIFO_S* FIFO)
 	return FIFO->Capacity - FIFOGetReadByteSize(FIFO);
 }
 
-unsigned int FIFORead(FIFO_S* FIFO, void* DataBuffer, unsigned int DataCount)
+unsigned int FIFORead(FIFO_S* FIFO, void* DataBuffer, unsigned int DataLength)
 {
 	unsigned int ReadCount = FIFOGetReadByteSize(FIFO) / FIFO->TypeSize;
 	unsigned int C = 0;
 	unsigned short RemainGranularity;
 	int NewPRead;
-	if (ReadCount == 0 || DataCount == 0) return 0;
-	else if (ReadCount < DataCount)DataCount = ReadCount;
-	for (C = 0; C < DataCount; C++)
+	if (ReadCount == 0 || DataLength == 0) return 0;
+	else if (ReadCount < DataLength)DataLength = ReadCount;
+	for (C = 0; C < DataLength; C++)
 	{
 		if (FIFO->PRead + FIFO->TypeSize > FIFO->Capacity)
 		{
@@ -100,18 +100,53 @@ unsigned int FIFORead(FIFO_S* FIFO, void* DataBuffer, unsigned int DataCount)
 		FIFO->PRead = NewPRead;
 	}
 
-	return DataCount;
+	return DataLength;
 }
 
-unsigned char FIFOWrite(FIFO_S* FIFO, void* DataBuffer, unsigned int DataCount)
+unsigned int FIFOVirtualRead(FIFO_S* FIFO, void* DataBuffer, unsigned int DataLength,unsigned int DataOffset)
+{
+	unsigned int ReadCount = FIFOGetReadByteSize(FIFO) / FIFO->TypeSize;
+	unsigned int C = 0;
+	unsigned short RemainGranularity;
+	int NewPRead;
+	unsigned int VirtualPread = FIFO->PRead;
+	if (ReadCount == 0 || DataLength == 0) return 0;
+	else if (ReadCount < (DataLength + DataOffset)) DataLength = ReadCount - DataOffset;
+	if (DataLength == 0) return 0;
+
+	if (VirtualPread + DataOffset* FIFO->TypeSize >= FIFO->Capacity) VirtualPread = VirtualPread + DataOffset * FIFO->TypeSize - FIFO->Capacity;
+	else VirtualPread += DataOffset * FIFO->TypeSize;
+
+	for (C = 0; C < DataLength; C++)
+	{
+		if (VirtualPread + FIFO->TypeSize > FIFO->Capacity)
+		{
+			RemainGranularity = FIFO->TypeSize + VirtualPread - FIFO->Capacity;
+			FIFOMemcpy((unsigned char*)DataBuffer + C * FIFO->TypeSize, (unsigned char*)FIFO->Pointer + VirtualPread, FIFO->TypeSize - RemainGranularity);
+			FIFOMemcpy((unsigned char*)DataBuffer + C * FIFO->TypeSize + FIFO->TypeSize - RemainGranularity, (unsigned char*)FIFO->Pointer, RemainGranularity);
+			NewPRead = RemainGranularity;
+		}
+		else
+		{
+			FIFOMemcpy((unsigned char*)DataBuffer + C * FIFO->TypeSize, (unsigned char*)FIFO->Pointer + VirtualPread, FIFO->TypeSize);
+			NewPRead = VirtualPread + FIFO->TypeSize;
+			if (NewPRead >= FIFO->Capacity)  NewPRead = 0;
+		}
+		VirtualPread = NewPRead;
+	}
+
+	return DataLength;
+}
+
+unsigned char FIFOWrite(FIFO_S* FIFO, void* DataBuffer, unsigned int DataLength)
 {
 	unsigned int Temp, Temp2, Count;
 	unsigned short RemainGranularity;
 	int NewPWrite;
 	//先计算缓冲区剩余空间是否够用 -1防止W追上R
-	if (DataCount * FIFO->TypeSize + FIFOGetReadByteSize(FIFO) > FIFO->Capacity - 1) return 0;
+	if (DataLength * FIFO->TypeSize + FIFOGetReadByteSize(FIFO) > FIFO->Capacity - 1) return 0;
 	//计算新的Write写入点
-	for (Count = 0; Count < DataCount; Count++)
+	for (Count = 0; Count < DataLength; Count++)
 	{
 
 		if (FIFO->PWrite + FIFO->TypeSize > FIFO->Capacity)
@@ -135,13 +170,13 @@ unsigned char FIFOWrite(FIFO_S* FIFO, void* DataBuffer, unsigned int DataCount)
 	return 1;
 }
 
-unsigned char FIFOReadByte(FIFO_S* FIFO, void* Data)
+unsigned char FIFOReadByte(FIFO_S* FIFO, void* Byte)
 {
 	unsigned int ReadCount = FIFOGetReadByteSize(FIFO);
 	unsigned int C = 0;
 	if (ReadCount == 0) return 0;
 
-	(*(unsigned char*)Data) = ((unsigned char*)(FIFO->Pointer))[FIFO->PRead];
+	(*(unsigned char*)Byte) = ((unsigned char*)(FIFO->Pointer))[FIFO->PRead];
 
 	//移动读指针
 	if (FIFO->PRead + 1 == FIFO->Capacity) FIFO->PRead = 0;
@@ -150,39 +185,39 @@ unsigned char FIFOReadByte(FIFO_S* FIFO, void* Data)
 	return 1;
 }
 
-unsigned char FIFOVirtualReadByte(FIFO_S* FIFO, void* Data, unsigned int PReadOffset)
+unsigned char FIFOVirtualReadByte(FIFO_S* FIFO, void* Byte, unsigned int ByteOffset)
 {
 	unsigned int ReadCount = FIFOGetReadByteSize(FIFO);
 	unsigned int C = 0;
-	unsigned int VirtualPRead = FIFO->PRead + (PReadOffset % (FIFO->Capacity));
+	unsigned int VirtualPRead = FIFO->PRead + (ByteOffset % (FIFO->Capacity));
 
 
 	if (ReadCount == 0) return 0;
 
-	if (PReadOffset > ReadCount) return 0;
+	if (ByteOffset > ReadCount) return 0;
 
 	if (VirtualPRead >= FIFO->Capacity) VirtualPRead -= FIFO->Capacity;
 
-	(*(unsigned char*)Data) = ((unsigned char*)(FIFO->Pointer))[VirtualPRead];
+	(*(unsigned char*)Byte) = ((unsigned char*)(FIFO->Pointer))[VirtualPRead];
 
 	return 1;
 }
 
-unsigned char FIFOMoveReadPoint(FIFO_S* FIFO, unsigned int ByteSize)
+unsigned char FIFOMoveReadPoint(FIFO_S* FIFO, unsigned int ByteLength)
 {
 	unsigned int ReadCount = FIFOGetReadByteSize(FIFO);
 	unsigned int C = 0;
 
 	if (ReadCount == 0) return 0;
-	if (ByteSize > ReadCount) return 0;
+	if (ByteLength > ReadCount) return 0;
 
-	if (FIFO->PRead + ByteSize >= FIFO->Capacity) FIFO->PRead = (FIFO->PRead) + ByteSize - FIFO->Capacity;
-	else (FIFO->PRead) += ByteSize;
+	if (FIFO->PRead + ByteLength >= FIFO->Capacity) FIFO->PRead = (FIFO->PRead) + ByteLength - FIFO->Capacity;
+	else (FIFO->PRead) += ByteLength;
 
 	return 1;
 }
 
-unsigned char FIFOWriteByte(FIFO_S* FIFO, void* Data)
+unsigned char FIFOWriteByte(FIFO_S* FIFO, void* Byte)
 {
 	//先计算缓冲区剩余空间是否够用 -1防止W追上R
 	if (1 + FIFOGetReadByteSize(FIFO) > FIFO->Capacity - 1) return 0;
@@ -192,11 +227,11 @@ unsigned char FIFOWriteByte(FIFO_S* FIFO, void* Data)
 	if (NewPWrite >= FIFO->Capacity)
 	{
 		NewPWrite = 0;
-		((unsigned char*)(FIFO->Pointer))[FIFO->PWrite] = (*(unsigned char*)Data);
+		((unsigned char*)(FIFO->Pointer))[FIFO->PWrite] = (*(unsigned char*)Byte);
 	}
 	else
 	{
-		((unsigned char*)(FIFO->Pointer))[FIFO->PWrite] = (*(unsigned char*)Data);
+		((unsigned char*)(FIFO->Pointer))[FIFO->PWrite] = (*(unsigned char*)Byte);
 	}
 	FIFO->PWrite = NewPWrite;
 	return 1;
